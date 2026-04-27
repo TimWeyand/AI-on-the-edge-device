@@ -291,6 +291,118 @@ bool ChangeHostName(std::string fn, std::string _newhostname)
     return true;
 }
 
+
+bool ChangeStaticIP(std::string fn, std::string _ip, std::string _gateway, std::string _netmask, std::string _dns)
+{
+    // Short-circuit: if all fields match the currently-loaded values, nothing to do.
+    if (_ip == wlan_config.ipaddress &&
+        _gateway == wlan_config.gateway &&
+        _netmask == wlan_config.netmask &&
+        _dns == wlan_config.dns) {
+        return false;
+    }
+
+    std::string line = "";
+    std::vector<string> splitted;
+    std::vector<string> neuesfile;
+    bool foundIp = false, foundGw = false, foundNm = false, foundDns = false;
+
+    fn = FormatFileName(fn);
+    FILE* pFile = fopen(fn.c_str(), "r");
+    if (pFile == NULL) {
+        LogFile.WriteToFile(ESP_LOG_ERROR, TAG, "ChangeStaticIP: Unable to open file wlan.ini (read)");
+        return false;
+    }
+
+    char zw[256];
+    if (fgets(zw, sizeof(zw), pFile) == NULL) {
+        LogFile.WriteToFile(ESP_LOG_ERROR, TAG, "ChangeStaticIP: File opened, but empty or content not readable");
+        fclose(pFile);
+        return false;
+    }
+    line = std::string(zw);
+
+    auto buildLine = [](const std::string& key, const std::string& value, const std::string& placeholder) -> std::string {
+        if (value.length() > 0) {
+            return key + " = \"" + value + "\"\n";
+        }
+        return ";" + key + " = \"" + placeholder + "\"\n";
+    };
+
+    while ((line.size() > 0) || !(feof(pFile)))
+    {
+        splitted = ZerlegeZeileWLAN(line, "=");
+        splitted[0] = trim(splitted[0], " ");
+        std::string keyU = toUpper(splitted[0]);
+
+        if ((splitted.size() > 1) && (keyU == "IP" || keyU == ";IP")) {
+            line = buildLine("ip", _ip, "xxx.xxx.xxx.xxx");
+            foundIp = true;
+        }
+        else if ((splitted.size() > 1) && (keyU == "GATEWAY" || keyU == ";GATEWAY")) {
+            line = buildLine("gateway", _gateway, "xxx.xxx.xxx.xxx");
+            foundGw = true;
+        }
+        else if ((splitted.size() > 1) && (keyU == "NETMASK" || keyU == ";NETMASK")) {
+            line = buildLine("netmask", _netmask, "xxx.xxx.xxx.xxx");
+            foundNm = true;
+        }
+        else if ((splitted.size() > 1) && (keyU == "DNS" || keyU == ";DNS")) {
+            line = buildLine("dns", _dns, "xxx.xxx.xxx.xxx");
+            foundDns = true;
+        }
+
+        neuesfile.push_back(line);
+
+        if (fgets(zw, sizeof(zw), pFile) == NULL) {
+            line = "";
+        }
+        else {
+            line = std::string(zw);
+        }
+    }
+    fclose(pFile);
+
+    // Append any fields that didn't already exist in the file. They share one section header.
+    if (!foundIp || !foundGw || !foundNm || !foundDns) {
+        std::string header  = "\n;++++++++++++++++++++++++++++++++++\n";
+        header += "; Fixed IP: If you like to use fixed IP instead of DHCP (default),\n";
+        header += "; the following parameters need to be configured. ip/gateway/netmask are\n";
+        header += "; mandatory for static IP, dns is optional (falls back to gateway).\n\n";
+        neuesfile.push_back(header);
+        if (!foundIp)  neuesfile.push_back(buildLine("ip",      _ip,      "xxx.xxx.xxx.xxx"));
+        if (!foundGw)  neuesfile.push_back(buildLine("gateway", _gateway, "xxx.xxx.xxx.xxx"));
+        if (!foundNm)  neuesfile.push_back(buildLine("netmask", _netmask, "xxx.xxx.xxx.xxx"));
+        if (!foundDns) neuesfile.push_back(buildLine("dns",     _dns,     "xxx.xxx.xxx.xxx"));
+    }
+
+    pFile = fopen(fn.c_str(), "w+");
+    if (pFile == NULL) {
+        LogFile.WriteToFile(ESP_LOG_ERROR, TAG, "ChangeStaticIP: Unable to open file wlan.ini (write)");
+        return false;
+    }
+
+    for (size_t i = 0; i < neuesfile.size(); ++i) {
+        fputs(neuesfile[i].c_str(), pFile);
+    }
+    fclose(pFile);
+
+    // Update in-memory config so /sysinfo etc. reflect the change immediately, even though
+    // the actual network reconfiguration only happens at next boot.
+    wlan_config.ipaddress = _ip;
+    wlan_config.gateway = _gateway;
+    wlan_config.netmask = _netmask;
+    wlan_config.dns = _dns;
+
+    LogFile.WriteToFile(ESP_LOG_INFO, TAG,
+        "ChangeStaticIP applied: ip=" + (_ip.empty() ? std::string("DHCP") : _ip) +
+        ", gateway=" + _gateway + ", netmask=" + _netmask + ", dns=" + _dns +
+        " (effective after reboot)");
+
+    return true;
+}
+
+
 #if (defined WLAN_USE_ROAMING_BY_SCANNING || (defined WLAN_USE_MESH_ROAMING && defined WLAN_USE_MESH_ROAMING_ACTIVATE_CLIENT_TRIGGERED_QUERIES))
 bool ChangeRSSIThreshold(std::string fn, int _newrssithreshold)
 {
