@@ -295,6 +295,8 @@ bool ChangeHostName(std::string fn, std::string _newhostname)
 bool ChangeStaticIP(std::string fn, std::string _ip, std::string _gateway, std::string _netmask, std::string _dns)
 {
     // Short-circuit: if all fields match the currently-loaded values, nothing to do.
+    // Returns false here — the caller can detect "no-op" by comparing the four arguments
+    // against wlan_config itself (see the doc-comment in read_wlanini.h).
     if (_ip == wlan_config.ipaddress &&
         _gateway == wlan_config.gateway &&
         _netmask == wlan_config.netmask &&

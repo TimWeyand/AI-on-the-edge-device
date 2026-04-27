@@ -20,8 +20,6 @@
 #include "basic_auth.h"
 #include "esp_chip_info.h"
 #include "server_ota.h"  // for doRebootOTA()
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #include <stdio.h>
 
@@ -407,6 +405,43 @@ esp_err_t sysinfo_handler(httpd_req_t *req)
 }
 
 
+/* Validate a dotted-quad IPv4 string.
+ *
+ * Accepts an empty string (callers use that to mean "clear / DHCP"). Otherwise
+ * the string must be exactly four decimal octets separated by dots, each
+ * between 0 and 255 inclusive, no leading/trailing whitespace, no extra
+ * characters. Rejects "999.999.999.999", "192.168", "foo", and any string with
+ * shell-meta or quote characters that could otherwise corrupt wlan.ini.
+ */
+static bool isValidIPv4OrEmpty(const std::string& s)
+{
+    if (s.empty()) return true;
+
+    int parts = 0;
+    int chars_in_part = 0;
+    int part_value = 0;
+    for (char c : s) {
+        if (c == '.') {
+            if (chars_in_part == 0 || part_value > 255) return false;
+            parts++;
+            chars_in_part = 0;
+            part_value = 0;
+        }
+        else if (c >= '0' && c <= '9') {
+            chars_in_part++;
+            if (chars_in_part > 3) return false;
+            part_value = part_value * 10 + (c - '0');
+        }
+        else {
+            return false;
+        }
+    }
+    // Trailing octet
+    if (chars_in_part == 0 || part_value > 255) return false;
+    return parts == 3;
+}
+
+
 /* Static IP configuration handler.
  *
  * Updates the IP/gateway/netmask/dns lines in /sdcard/wlan.ini, preserving SSID, password,
@@ -421,7 +456,12 @@ esp_err_t sysinfo_handler(httpd_req_t *req)
  *
  * To switch back to DHCP: call without ip/gateway/netmask params (they default to empty).
  *
- * Examples:
+ * All non-empty IP values must be valid dotted-quad IPv4 strings; malformed input
+ * is rejected with HTTP 400 BEFORE wlan.ini is touched. Without this check, garbage
+ * in wlan.ini would brick the device into recovery-by-SD-card-removal mode (the
+ * firmware only falls back to SoftAP when wlan.ini is missing, not malformed).
+ *
+ * Method: POST only (config-mutating). Examples:
  *   curl -X POST "http://<device>/save_static_ip?ip=192.168.5.29&gateway=192.168.5.1&netmask=255.255.255.0&dns=192.168.250.3&reboot=true"
  *   curl -X POST "http://<device>/save_static_ip?reboot=true"   # reset to DHCP
  */
@@ -453,6 +493,21 @@ esp_err_t save_static_ip_handler(httpd_req_t *req)
         }
     }
 
+    // Validate every non-empty value as dotted-quad IPv4 BEFORE touching wlan.ini.
+    // Malformed values would otherwise be written verbatim and break the parser at next boot.
+    if (!isValidIPv4OrEmpty(ip)
+        || !isValidIPv4OrEmpty(gateway)
+        || !isValidIPv4OrEmpty(netmask)
+        || !isValidIPv4OrEmpty(dns)) {
+        std::string err = "Invalid IPv4 address in one of ip/gateway/netmask/dns. "
+                          "Each must be dotted-quad (e.g. 192.168.5.29 with each octet 0-255), or empty.";
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, err.c_str(), err.length());
+        LogFile.WriteToFile(ESP_LOG_WARN, TAG, "save_static_ip rejected: " + err);
+        return ESP_OK;
+    }
+
     // For static IP all three of ip/gateway/netmask must be set together; otherwise switch to DHCP.
     bool anySet = !ip.empty() || !gateway.empty() || !netmask.empty();
     bool allCoreSet = !ip.empty() && !gateway.empty() && !netmask.empty();
@@ -466,6 +521,15 @@ esp_err_t save_static_ip_handler(httpd_req_t *req)
 
     bool changed = ChangeStaticIP("/sdcard/wlan.ini", ip, gateway, netmask, dns);
 
+    // ChangeStaticIP returns false for both no-op AND I/O error. Distinguish by checking
+    // whether the post-call wlan_config matches the request (ChangeStaticIP updates
+    // wlan_config in-memory on a successful write; on no-op the values already matched).
+    bool noOp = !changed
+                && ip == wlan_config.ipaddress
+                && gateway == wlan_config.gateway
+                && netmask == wlan_config.netmask
+                && dns == wlan_config.dns;
+
     std::string msg;
     if (changed) {
         if (allCoreSet) {
@@ -477,8 +541,11 @@ esp_err_t save_static_ip_handler(httpd_req_t *req)
             msg = "wlan.ini updated: switched back to DHCP. Effective after reboot.";
         }
     }
+    else if (noOp) {
+        msg = "No change — wlan.ini already has these values.";
+    }
     else {
-        msg = "No change applied (values already match current configuration, or wlan.ini I/O error — check device log).";
+        msg = "wlan.ini write failed — check device log.";
     }
 
     httpd_resp_set_type(req, "text/plain");
@@ -488,8 +555,8 @@ esp_err_t save_static_ip_handler(httpd_req_t *req)
     LogFile.WriteToFile(ESP_LOG_INFO, TAG, "save_static_ip: " + msg);
 
     if (doReboot && changed) {
-        // Brief delay to let the HTTP response flush before we kick the box.
-        vTaskDelay(pdMS_TO_TICKS(500));
+        // doRebootOTA() already sleeps 5s before esp_restart(), giving the HTTP
+        // response plenty of time to flush — no extra delay needed here.
         doRebootOTA();
     }
 
@@ -508,7 +575,9 @@ void register_server_main_uri(httpd_handle_t server, const char *base_path)
     httpd_register_uri_handler(server, &info_get_handle);
 
     // Static IP configuration: write wlan.ini's ip/gateway/netmask/dns lines.
-    // Both POST and GET are accepted for convenience (curl-friendly).
+    // POST-only: this mutates persistent config; GET would invite CSRF-style
+    // accidents (browser link-prefetch / mistyped <img src> on the LAN with
+    // cached basic-auth creds). Use curl -X POST.
     httpd_uri_t save_static_ip_post = {
         .uri      = "/save_static_ip",
         .method   = HTTP_POST,
@@ -516,14 +585,6 @@ void register_server_main_uri(httpd_handle_t server, const char *base_path)
         .user_ctx = (void*) base_path
     };
     httpd_register_uri_handler(server, &save_static_ip_post);
-
-    httpd_uri_t save_static_ip_get = {
-        .uri      = "/save_static_ip",
-        .method   = HTTP_GET,
-        .handler  = APPLY_BASIC_AUTH_FILTER(save_static_ip_handler),
-        .user_ctx = (void*) base_path
-    };
-    httpd_register_uri_handler(server, &save_static_ip_get);
 
     httpd_uri_t sysinfo_handle = {
         .uri       = "/sysinfo",  // Match all URIs of type /path/to/file
@@ -572,7 +633,7 @@ httpd_handle_t start_webserver(void)
     config.ctrl_port = 32768;
     config.max_open_sockets = 5; //20210921 --> previously 7   
     config.max_uri_handlers = 45; // Make sure this fits all URI handlers. Memory usage in bytes: 6*max_uri_handlers
-                                  // (was 41; bumped for /save_static_ip GET+POST handlers)
+                                  // (was 41; bumped to 45 for /save_static_ip plus headroom)
     config.max_resp_headers = 8;                        
     config.backlog_conn = 5;                        
     config.lru_purge_enable = true; // this cuts old connections if new ones are needed.               
