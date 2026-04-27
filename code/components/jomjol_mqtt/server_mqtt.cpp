@@ -228,13 +228,18 @@ bool MQTThomeassistantDiscovery(int qos) {
         allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "problem",                    "Problem",                              "alert-outline",             "",                    "problem",         "",                 "",               qos); // Special binary sensor which is based on error topic
     }
 
-    LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all Homeassistant Discovery MQTT topics");
+    if (allSendsSuccessed) {
+        LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all Homeassistant Discovery MQTT topics");
+    }
+    else {
+        LogFile.WriteToFile(ESP_LOG_WARN, TAG, "One or more Homeassistant Discovery MQTT topics failed to publish — will retry on next scheduled cycle");
+    }
 
     int aFreeInternalHeapSizeAfter = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     int aMinFreeInternalHeapSize =  heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
 
-    LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Int. Heap Usage before Publishing Homeassistand Discovery Topics: " + 
-            to_string(aFreeInternalHeapSizeBefore) + ", after: " + to_string(aFreeInternalHeapSizeAfter) + ", delta: " + 
+    LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Int. Heap Usage before Publishing Homeassistand Discovery Topics: " +
+            to_string(aFreeInternalHeapSizeBefore) + ", after: " + to_string(aFreeInternalHeapSizeAfter) + ", delta: " +
             to_string(aFreeInternalHeapSizeBefore - aFreeInternalHeapSizeAfter) + ", lowest free: " + to_string(aMinFreeInternalHeapSize));
 
     return allSendsSuccessed;
@@ -268,7 +273,12 @@ bool publishSystemData(int qos) {
     sprintf(tmp_char, "%d", (int)temperatureRead());
     allSendsSuccessed &= MQTTPublish(maintopic + "/" + "CPUtemp", std::string(tmp_char), qos, retainFlag);
 
-    LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all System MQTT topics");
+    if (allSendsSuccessed) {
+        LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all System MQTT topics");
+    }
+    else {
+        LogFile.WriteToFile(ESP_LOG_WARN, TAG, "One or more System MQTT topics failed to publish");
+    }
 
 	int aFreeInternalHeapSizeAfter = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
 	int aMinFreeInternalHeapSize =  heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
@@ -302,7 +312,12 @@ bool publishStaticData(int qos) {
     stream << std::fixed << std::setprecision(1) << roundInterval; // minutes
     allSendsSuccessed &= MQTTPublish(maintopic + "/" + "interval", stream.str(), qos, retainFlag);
 
-    LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all Static MQTT topics");
+    if (allSendsSuccessed) {
+        LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all Static MQTT topics");
+    }
+    else {
+        LogFile.WriteToFile(ESP_LOG_WARN, TAG, "One or more Static MQTT topics failed to publish — will retry on next scheduled cycle");
+    }
 
 	int aFreeInternalHeapSizeAfter = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
 	int aMinFreeInternalHeapSize =  heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
