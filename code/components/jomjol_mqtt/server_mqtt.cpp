@@ -162,11 +162,14 @@ bool sendHomeAssistantDiscoveryTopic(std::string group, std::string field,
     "}"  +
     "}";
 
-    return MQTTPublish(topicFull, payload, qos, true);
+    // Discovery topics use poison_round_on_failure=false: a failed discovery publish should NOT
+    // block subsequent data publishes in the same flow round. Discovery is auto-resent at next
+    // reconnect/scheduled cycle anyway.
+    return MQTTPublish(topicFull, payload, qos, true, false);
 }
 
-bool MQTThomeassistantDiscovery(int qos) {  
-    bool allSendsSuccessed = false;
+bool MQTThomeassistantDiscovery(int qos) {
+    bool allSendsSuccessed = true;  // Aggregated with &= below: stays true only if EVERY topic succeeded
 
     if (!getMQTTisConnected()) {
         LogFile.WriteToFile(ESP_LOG_WARN, TAG, "Unable to send Homeassistant Discovery Topics, we are not connected to the MQTT broker!");
@@ -178,17 +181,17 @@ bool MQTThomeassistantDiscovery(int qos) {
 	int aFreeInternalHeapSizeBefore = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
 
     //                                                   Group | Field            | User Friendly Name | Icon                      | Unit | Device Class     | State Class  | Entity Category
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "uptime",          "Uptime",            "progress-clock",           "s",   "duration",        "measurement", "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "MAC",             "MAC Address",       "network-outline",          "",    "",                "",            "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "fwVersion",       "Firmware Version",  "application-outline",      "",    "",                "",            "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "hostname",        "Hostname",          "network-outline",          "",    "",                "",            "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "freeMem",         "Free Memory",       "memory",                   "B",   "",                "measurement", "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "wifiRSSI",        "Wi-Fi RSSI",        "wifi",                     "dBm", "signal_strength", "",            "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "CPUtemp",         "CPU Temperature",   "thermometer",              "°C",  "temperature",     "measurement", "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "interval",        "Interval",          "clock-time-eight-outline", "min",  "",               "measurement", "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "IP",              "IP",                "network-outline",           "",    "",               "",            "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "status",          "Status",            "list-status",               "",    "",               "",            "diagnostic", qos);
-    allSendsSuccessed |= sendHomeAssistantDiscoveryTopic("",     "flowstart",       "Manual Flow Start", "timer-play-outline",        "",    "",               "",            "",           qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "uptime",          "Uptime",            "progress-clock",           "s",   "duration",        "measurement", "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "MAC",             "MAC Address",       "network-outline",          "",    "",                "",            "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "fwVersion",       "Firmware Version",  "application-outline",      "",    "",                "",            "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "hostname",        "Hostname",          "network-outline",          "",    "",                "",            "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "freeMem",         "Free Memory",       "memory",                   "B",   "",                "measurement", "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "wifiRSSI",        "Wi-Fi RSSI",        "wifi",                     "dBm", "signal_strength", "",            "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "CPUtemp",         "CPU Temperature",   "thermometer",              "°C",  "temperature",     "measurement", "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "interval",        "Interval",          "clock-time-eight-outline", "min",  "",               "measurement", "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "IP",              "IP",                "network-outline",           "",    "",               "",            "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "status",          "Status",            "list-status",               "",    "",               "",            "diagnostic", qos);
+    allSendsSuccessed &= sendHomeAssistantDiscoveryTopic("",     "flowstart",       "Manual Flow Start", "timer-play-outline",        "",    "",               "",            "",           qos);
 
 
     for (int i = 0; i < (*NUMBERS).size(); ++i) {
@@ -213,16 +216,16 @@ bool MQTThomeassistantDiscovery(int qos) {
         }
 
     //                                                       Group   | Field                       | User Friendly Name                    | Icon                       | Unit                 | Device Class     | State Class       | Entity Category | QoS
-        allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "value",                      "Value",                                "gauge",                     valueUnit,             meterType,         value_state_class,  "",               qos); // State Class = "total_increasing" if <NUMBERS>.AllowNegativeRates = false, "measurement" in case of a thermometer, else use "total".
-        allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "raw",                        "Raw Value",                            "raw",                       valueUnit,             meterType,         value_state_class,  "diagnostic",     qos);
-        allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "error",                      "Error",                                "alert-circle-outline",      "",                    "",                "",                 "diagnostic",     qos);
+        allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "value",                      "Value",                                "gauge",                     valueUnit,             meterType,         value_state_class,  "",               qos); // State Class = "total_increasing" if <NUMBERS>.AllowNegativeRates = false, "measurement" in case of a thermometer, else use "total".
+        allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "raw",                        "Raw Value",                            "raw",                       valueUnit,             meterType,         value_state_class,  "diagnostic",     qos);
+        allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "error",                      "Error",                                "alert-circle-outline",      "",                    "",                "",                 "diagnostic",     qos);
         /* Not announcing "rate" as it is better to use rate_per_time_unit resp. rate_per_digitization_round */
-     // allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "rate",                       "Rate (Unit/Minute)",                   "swap-vertical",             "",                    "",                "",                 "",               qos); // Legacy, always Unit per Minute
-        allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "rate_per_time_unit",         "Rate (" + rateUnit + ")",              "swap-vertical",             rateUnit,              rate_device_class, "measurement",      "",               qos);
-        allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "rate_per_digitization_round","Change since last Digitization round", "arrow-expand-vertical",     valueUnit,             "",                "measurement",      "",               qos); // correctly the Unit is Unit/Interval!
-        allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "timestamp",                  "Timestamp",                            "clock-time-eight-outline",  "",                    "timestamp",       "",                 "diagnostic",     qos);
-        allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "json",                       "JSON",                                 "code-json",                 "",                    "",                "",                 "diagnostic",     qos);
-        allSendsSuccessed |= sendHomeAssistantDiscoveryTopic(group,   "problem",                    "Problem",                              "alert-outline",             "",                    "problem",         "",                 "",               qos); // Special binary sensor which is based on error topic
+     // allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "rate",                       "Rate (Unit/Minute)",                   "swap-vertical",             "",                    "",                "",                 "",               qos); // Legacy, always Unit per Minute
+        allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "rate_per_time_unit",         "Rate (" + rateUnit + ")",              "swap-vertical",             rateUnit,              rate_device_class, "measurement",      "",               qos);
+        allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "rate_per_digitization_round","Change since last Digitization round", "arrow-expand-vertical",     valueUnit,             "",                "measurement",      "",               qos); // correctly the Unit is Unit/Interval!
+        allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "timestamp",                  "Timestamp",                            "clock-time-eight-outline",  "",                    "timestamp",       "",                 "diagnostic",     qos);
+        allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "json",                       "JSON",                                 "code-json",                 "",                    "",                "",                 "diagnostic",     qos);
+        allSendsSuccessed &= sendHomeAssistantDiscoveryTopic(group,   "problem",                    "Problem",                              "alert-outline",             "",                    "problem",         "",                 "",               qos); // Special binary sensor which is based on error topic
     }
 
     LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all Homeassistant Discovery MQTT topics");
@@ -238,7 +241,7 @@ bool MQTThomeassistantDiscovery(int qos) {
 }
 
 bool publishSystemData(int qos) {
-    bool allSendsSuccessed = false;
+    bool allSendsSuccessed = true;  // Aggregated with &= below: stays true only if EVERY topic succeeded
 
     if (!getMQTTisConnected()) {
         LogFile.WriteToFile(ESP_LOG_WARN, TAG, "Unable to send System Topics, we are not connected to the MQTT broker!");
@@ -251,19 +254,19 @@ bool publishSystemData(int qos) {
 
 	int aFreeInternalHeapSizeBefore = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
 
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + std::string(LWT_TOPIC), LWT_CONNECTED, qos, retainFlag); // Publish "connected" to maintopic/connection
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + std::string(LWT_TOPIC), LWT_CONNECTED, qos, retainFlag); // Publish "connected" to maintopic/connection
 
     sprintf(tmp_char, "%ld", (long)getUpTime());
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "uptime", std::string(tmp_char), qos, retainFlag);
-    
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "uptime", std::string(tmp_char), qos, retainFlag);
+
     sprintf(tmp_char, "%lu", (long) getESPHeapSize());
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "freeMem", std::string(tmp_char), qos, retainFlag);
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "freeMem", std::string(tmp_char), qos, retainFlag);
 
     sprintf(tmp_char, "%d", get_WIFI_RSSI());
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "wifiRSSI", std::string(tmp_char), qos, retainFlag);
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "wifiRSSI", std::string(tmp_char), qos, retainFlag);
 
     sprintf(tmp_char, "%d", (int)temperatureRead());
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "CPUtemp", std::string(tmp_char), qos, retainFlag);
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "CPUtemp", std::string(tmp_char), qos, retainFlag);
 
     LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all System MQTT topics");
 
@@ -279,7 +282,7 @@ bool publishSystemData(int qos) {
 
 
 bool publishStaticData(int qos) {
-    bool allSendsSuccessed = false;
+    bool allSendsSuccessed = true;  // Aggregated with &= below: stays true only if EVERY topic succeeded
 
     if (!getMQTTisConnected()) {
         LogFile.WriteToFile(ESP_LOG_WARN, TAG, "Unable to send Static Topics, we are not connected to the MQTT broker!");
@@ -290,14 +293,14 @@ bool publishStaticData(int qos) {
 
 	int aFreeInternalHeapSizeBefore = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
 
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "fwVersion", getFwVersion().c_str(), qos, retainFlag);
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "MAC", getMac(), qos, retainFlag);
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "IP", *getIPAddress(), qos, retainFlag);
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "hostname", wlan_config.hostname, qos, retainFlag);
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "fwVersion", getFwVersion().c_str(), qos, retainFlag);
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "MAC", getMac(), qos, retainFlag);
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "IP", *getIPAddress(), qos, retainFlag);
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "hostname", wlan_config.hostname, qos, retainFlag);
 
     std::stringstream stream;
     stream << std::fixed << std::setprecision(1) << roundInterval; // minutes
-    allSendsSuccessed |= MQTTPublish(maintopic + "/" + "interval", stream.str(), qos, retainFlag);
+    allSendsSuccessed &= MQTTPublish(maintopic + "/" + "interval", stream.str(), qos, retainFlag);
 
     LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "Successfully published all Static MQTT topics");
 
@@ -321,20 +324,27 @@ esp_err_t scheduleSendingDiscovery_and_static_Topics(httpd_req_t *req) {
 
 
 esp_err_t sendDiscovery_and_static_Topics(void) {
-    bool success = false;
-
     if (!sendingOf_DiscoveryAndStaticTopics_scheduled) {
         // Flag not set, nothing to do
         return ESP_OK;
     }
 
+    bool discoveryOk = true;  // default true so the flag is cleared when HA discovery is disabled
+    bool staticOk;
+
     if (HomeassistantDiscovery) {
-        success = MQTThomeassistantDiscovery(1);
+        // Patch: QoS=0 instead of 1 to avoid backpressure-induced publish failures
+        // when broker ACKs are slow (cross-VLAN/RTT). With QoS=1 a burst of 19
+        // discovery topics can fill the ESP socket TX buffer before PUBACKs drain,
+        // causing topic ~5 to fail with -1 and triggering failedOnRound which
+        // silently skips the rest of the round (incl. data publishes).
+        // Retain stays true, so HA still receives + persists the discovery payloads.
+        discoveryOk = MQTThomeassistantDiscovery(0);
     }
 
-    success |= publishStaticData(1);
+    staticOk = publishStaticData(1);
 
-    if (success) { // Success, clear the flag
+    if (discoveryOk && staticOk) { // Both must succeed before we stop retrying
         sendingOf_DiscoveryAndStaticTopics_scheduled = false;
         return ESP_OK;
     }
