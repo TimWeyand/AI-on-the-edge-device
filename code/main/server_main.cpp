@@ -19,6 +19,9 @@
 #include "esp_log.h"
 #include "basic_auth.h"
 #include "esp_chip_info.h"
+#include "server_ota.h"  // for doRebootOTA()
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <stdio.h>
 
@@ -404,6 +407,96 @@ esp_err_t sysinfo_handler(httpd_req_t *req)
 }
 
 
+/* Static IP configuration handler.
+ *
+ * Updates the IP/gateway/netmask/dns lines in /sdcard/wlan.ini, preserving SSID, password,
+ * hostname and other settings. Changes take effect after the next reboot.
+ *
+ * Query parameters (all optional):
+ *   ip       — new static IP address (e.g. 192.168.5.29). Empty/missing → DHCP for IP.
+ *   gateway  — gateway address (mandatory for static IP)
+ *   netmask  — subnet mask (mandatory for static IP)
+ *   dns      — DNS server (optional, defaults to gateway if empty)
+ *   reboot   — if "true" or "1", reboot device after writing wlan.ini
+ *
+ * To switch back to DHCP: call without ip/gateway/netmask params (they default to empty).
+ *
+ * Examples:
+ *   curl -X POST "http://<device>/save_static_ip?ip=192.168.5.29&gateway=192.168.5.1&netmask=255.255.255.0&dns=192.168.250.3&reboot=true"
+ *   curl -X POST "http://<device>/save_static_ip?reboot=true"   # reset to DHCP
+ */
+esp_err_t save_static_ip_handler(httpd_req_t *req)
+{
+    LogFile.WriteToFile(ESP_LOG_DEBUG, TAG, "save_static_ip_handler");
+
+    char _query[400];
+    char _valuechar[64];
+    std::string ip = "", gateway = "", netmask = "", dns = "";
+    bool doReboot = false;
+
+    if (httpd_req_get_url_query_str(req, _query, sizeof(_query)) == ESP_OK) {
+        if (httpd_query_key_value(_query, "ip", _valuechar, sizeof(_valuechar)) == ESP_OK) {
+            ip = UrlDecode(std::string(_valuechar));
+        }
+        if (httpd_query_key_value(_query, "gateway", _valuechar, sizeof(_valuechar)) == ESP_OK) {
+            gateway = UrlDecode(std::string(_valuechar));
+        }
+        if (httpd_query_key_value(_query, "netmask", _valuechar, sizeof(_valuechar)) == ESP_OK) {
+            netmask = UrlDecode(std::string(_valuechar));
+        }
+        if (httpd_query_key_value(_query, "dns", _valuechar, sizeof(_valuechar)) == ESP_OK) {
+            dns = UrlDecode(std::string(_valuechar));
+        }
+        if (httpd_query_key_value(_query, "reboot", _valuechar, sizeof(_valuechar)) == ESP_OK) {
+            std::string r = toUpper(std::string(_valuechar));
+            doReboot = (r == "TRUE" || r == "1" || r == "YES");
+        }
+    }
+
+    // For static IP all three of ip/gateway/netmask must be set together; otherwise switch to DHCP.
+    bool anySet = !ip.empty() || !gateway.empty() || !netmask.empty();
+    bool allCoreSet = !ip.empty() && !gateway.empty() && !netmask.empty();
+    if (anySet && !allCoreSet) {
+        std::string err = "For static IP all three are mandatory: ip, gateway, netmask. Pass none to switch back to DHCP.";
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, err.c_str(), err.length());
+        return ESP_OK;
+    }
+
+    bool changed = ChangeStaticIP("/sdcard/wlan.ini", ip, gateway, netmask, dns);
+
+    std::string msg;
+    if (changed) {
+        if (allCoreSet) {
+            msg = "wlan.ini updated to static IP " + ip + " (gw=" + gateway + ", nm=" + netmask;
+            if (!dns.empty()) msg += ", dns=" + dns;
+            msg += "). Effective after reboot.";
+        }
+        else {
+            msg = "wlan.ini updated: switched back to DHCP. Effective after reboot.";
+        }
+    }
+    else {
+        msg = "No change applied (values already match current configuration, or wlan.ini I/O error — check device log).";
+    }
+
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, msg.c_str(), msg.length());
+
+    LogFile.WriteToFile(ESP_LOG_INFO, TAG, "save_static_ip: " + msg);
+
+    if (doReboot && changed) {
+        // Brief delay to let the HTTP response flush before we kick the box.
+        vTaskDelay(pdMS_TO_TICKS(500));
+        doRebootOTA();
+    }
+
+    return ESP_OK;
+}
+
+
 void register_server_main_uri(httpd_handle_t server, const char *base_path)
 {
     httpd_uri_t info_get_handle = {
@@ -413,6 +506,24 @@ void register_server_main_uri(httpd_handle_t server, const char *base_path)
         .user_ctx  = (void*) base_path    // Pass server data as context
     };
     httpd_register_uri_handler(server, &info_get_handle);
+
+    // Static IP configuration: write wlan.ini's ip/gateway/netmask/dns lines.
+    // Both POST and GET are accepted for convenience (curl-friendly).
+    httpd_uri_t save_static_ip_post = {
+        .uri      = "/save_static_ip",
+        .method   = HTTP_POST,
+        .handler  = APPLY_BASIC_AUTH_FILTER(save_static_ip_handler),
+        .user_ctx = (void*) base_path
+    };
+    httpd_register_uri_handler(server, &save_static_ip_post);
+
+    httpd_uri_t save_static_ip_get = {
+        .uri      = "/save_static_ip",
+        .method   = HTTP_GET,
+        .handler  = APPLY_BASIC_AUTH_FILTER(save_static_ip_handler),
+        .user_ctx = (void*) base_path
+    };
+    httpd_register_uri_handler(server, &save_static_ip_get);
 
     httpd_uri_t sysinfo_handle = {
         .uri       = "/sysinfo",  // Match all URIs of type /path/to/file
@@ -460,7 +571,8 @@ httpd_handle_t start_webserver(void)
     config.server_port = 80;
     config.ctrl_port = 32768;
     config.max_open_sockets = 5; //20210921 --> previously 7   
-    config.max_uri_handlers = 41; // Make sure this fits all URI handlers. Memory usage in bytes: 6*max_uri_handlers
+    config.max_uri_handlers = 45; // Make sure this fits all URI handlers. Memory usage in bytes: 6*max_uri_handlers
+                                  // (was 41; bumped for /save_static_ip GET+POST handlers)
     config.max_resp_headers = 8;                        
     config.backlog_conn = 5;                        
     config.lru_purge_enable = true; // this cuts old connections if new ones are needed.               
