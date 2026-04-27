@@ -40,42 +40,47 @@ int keepalive;
 bool SetRetainFlag;
 void (*callbackOnConnected)(std::string, bool) = NULL;
 
-bool MQTTPublish(std::string _key, std::string _content, int qos, bool retained_flag) 
+bool MQTTPublish(std::string _key, std::string _content, int qos, bool retained_flag, bool poison_round_on_failure)
 {
-    if (!mqtt_enabled) {                            // MQTT sevice not started / configured (MQTT_Init not called before)      
+    if (!mqtt_enabled) {                            // MQTT sevice not started / configured (MQTT_Init not called before)
         return false;
     }
 
-    if (failedOnRound == getCountFlowRounds()) {    // we already failed in this round, do not retry until the next round
+    if (poison_round_on_failure && (failedOnRound == getCountFlowRounds())) {    // we already failed in this round, do not retry until the next round
         return true; // Fail quietly
     }
 
-    #ifdef DEBUG_DETAIL_ON  
+    #ifdef DEBUG_DETAIL_ON
         LogFile.WriteHeapInfo("MQTT Publish");
     #endif
 
     MQTT_Init(); // Re-Init client if not initialized yet/anymore
 
     if (mqtt_initialized && mqtt_connected) {
-        #ifdef DEBUG_DETAIL_ON 
+        #ifdef DEBUG_DETAIL_ON
             long long int starttime = esp_timer_get_time();
         #endif
         int msg_id = esp_mqtt_client_publish(client, _key.c_str(), _content.c_str(), 0, qos, retained_flag);
-        #ifdef DEBUG_DETAIL_ON 
+        #ifdef DEBUG_DETAIL_ON
             ESP_LOGD(TAG, "Publish msg_id %d in %lld ms", msg_id, (esp_timer_get_time() - starttime)/1000);
         #endif
         if (msg_id == -1) {
-            LogFile.WriteToFile(ESP_LOG_WARN, TAG, "Failed to publish topic '" + _key + "', re-trying...");   
-            #ifdef DEBUG_DETAIL_ON 
+            LogFile.WriteToFile(ESP_LOG_WARN, TAG, "Failed to publish topic '" + _key + "', re-trying...");
+            #ifdef DEBUG_DETAIL_ON
                 starttime = esp_timer_get_time();
             #endif
             msg_id = esp_mqtt_client_publish(client, _key.c_str(), _content.c_str(), 0, qos, retained_flag);
-            #ifdef DEBUG_DETAIL_ON 
+            #ifdef DEBUG_DETAIL_ON
                 ESP_LOGD(TAG, "Publish msg_id %d in %lld ms", msg_id, (esp_timer_get_time() - starttime)/1000);
             #endif
             if (msg_id == -1) {
-                LogFile.WriteToFile(ESP_LOG_ERROR, TAG, "Failed to publish topic '" + _key + "', skipping all MQTT publishings in this round!");
-                failedOnRound = getCountFlowRounds();
+                if (poison_round_on_failure) {
+                    LogFile.WriteToFile(ESP_LOG_ERROR, TAG, "Failed to publish topic '" + _key + "', skipping all MQTT publishings in this round!");
+                    failedOnRound = getCountFlowRounds();
+                }
+                else {
+                    LogFile.WriteToFile(ESP_LOG_WARN, TAG, "Failed to publish topic '" + _key + "' (non-blocking; will retry next opportunity)");
+                }
                 return false;
             }
         }

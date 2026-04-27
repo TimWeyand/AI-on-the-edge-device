@@ -16,7 +16,7 @@ bool MQTT_Configure(std::string _mqttURI, std::string _clientid, std::string _us
 int MQTT_Init();
 void MQTTdestroy_client(bool _disable);
 
-bool MQTTPublish(std::string _key, std::string _content, int qos, bool retained_flag = 1);            // retained Flag as Standart
+bool MQTTPublish(std::string _key, std::string _content, int qos, bool retained_flag = 1, bool poison_round_on_failure = true);            // retained Flag as Standart; poison_round_on_failure=false skips the failedOnRound mechanism (use for non-critical publishes like HA Discovery)
 
 bool getMQTTisEnabled();
 bool getMQTTisConnected();
